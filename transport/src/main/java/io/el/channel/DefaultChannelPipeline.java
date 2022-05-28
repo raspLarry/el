@@ -1,5 +1,6 @@
 package io.el.channel;
 
+import io.el.channel.Channel.Internal;
 import io.el.concurrent.EventLoop;
 import io.el.internal.ObjectUtil;
 import java.net.SocketAddress;
@@ -44,11 +45,14 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     // TODO: generate name with the {@link ChannelHandler.getClass()}
     String name = UUID.randomUUID().toString();
     EventLoop eventLoop = null;
-    final AbstractChannelHandlerContext newHandlerContext = new DefaultHandlerContext__(name, this, eventLoop, handler);
-
+    final AbstractChannelHandlerContext newHandlerContext =
+        new DefaultChannelHandlerContext(name, this, eventLoop, handler);
 
     this.tailContext.prev = newHandlerContext;
     newHandlerContext.next = this.tailContext;
+
+    // TODO: add channel added callback to the list. And when channel is registered
+    // to the eventloop, fire all pending added callback
 
     prev.next = newHandlerContext;
     newHandlerContext.prev = prev;
@@ -67,9 +71,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     atomicRemoveFromHeandlerList(context);
   }
 
-  /**
-   * By using this, we can update the next and the prev reference atomically.
-   */
+  /** By using this, we can update the next and the prev reference atomically. */
   private synchronized void atomicRemoveFromHeandlerList(AbstractChannelHandlerContext context) {
     final AbstractChannelHandlerContext prev = context.prev;
     final AbstractChannelHandlerContext next = context.next;
@@ -82,7 +84,7 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     ObjectUtil.checkNotNull(handler, "handler");
 
     AbstractChannelHandlerContext ctx = headContext.next;
-    for (;;) {
+    for (; ; ) {
       if (ctx == null) {
         return null;
       }
@@ -106,27 +108,25 @@ public class DefaultChannelPipeline implements ChannelPipeline {
 
   @Override
   public ChannelPromise bind(SocketAddress localAddress) {
-    // TODO:
-    return null;
+    return this.tailContext.bind(localAddress);
   }
 
   @Override
   public ChannelPromise bind(SocketAddress localAddress, ChannelPromise promise) {
-    // TODO:
-    return null;
+    return this.tailContext.bind(localAddress, promise);
   }
 
   @Override
-  public ChannelPromise connect(SocketAddress remoteAddress, SocketAddress localAddress,
-      ChannelPromise promise) {
+  public ChannelPromise connect(
+      SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
     // TODO:
     return null;
   }
 
   @Override
   public ChannelPipeline fireChannelRegistered() {
-    // TODO:
-    return null;
+    AbstractChannelHandlerContext.invokeChannelRegistered(headContext);
+    return this;
   }
 
   @Override
@@ -135,14 +135,21 @@ public class DefaultChannelPipeline implements ChannelPipeline {
     return null;
   }
 
-  private static final class DefaultHandlerContext__ extends AbstractChannelHandlerContext {
+  /**
+   * Todo: This class will extends AbstractChannelHandlerContext The first handler context.
+   *
+   * <p>For the events which calls handlers from last, the {@link HeadContext} will call channel's
+   * methods after all the handers are called.
+   */
+  private static final class HeadContext extends AbstractChannelHandlerContext {
 
-    private final ChannelHandler handler;
+    private final HeadContextHandler handler;
+    private final Internal internal;
 
-    public DefaultHandlerContext__(String name, ChannelPipeline pipeline, EventLoop eventLoop,
-        ChannelHandler handler) {
-      super(name, pipeline, eventLoop, handler.getClass());
-      this.handler = handler;
+    public HeadContext(DefaultChannelPipeline pipeline) {
+      super(HEAD_NAME, pipeline, null, HeadContextHandler.class);
+      this.internal = pipeline.channel().internal();
+      this.handler = new HeadContextHandler(this.internal);
     }
 
     @Override
@@ -150,82 +157,52 @@ public class DefaultChannelPipeline implements ChannelPipeline {
       return this.handler;
     }
 
+    /** FIXME: This will be implemented in the {@link AbstractChannelHandlerContext} */
     @Override
-    public ChannelPromise bind(SocketAddress localAddress) {
-      // TODO:
-      return null;
-    }
-
-    @Override
-    public ChannelPromise bind(SocketAddress localAddress, ChannelPromise promise) {
-      // TODO:
-      return null;
-    }
-
-    @Override
-    public ChannelPromise connect(SocketAddress remoteAddress, SocketAddress localAddress,
-        ChannelPromise promise) {
-      // TODO:
+    public ChannelPromise connect(
+        SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
       return null;
     }
   }
 
-  /**
-   * Todo: This class will extends AbstractChannelHandlerContext
-   * The first handler context.
-   * <p>
-   * For the events which calls handlers from last,
-   * the {@link HeadContext} will call channel's methods
-   * after all the handers are called.
-   */
-  private static final class HeadContext extends AbstractChannelHandlerContext {
+  private static final class HeadContextHandler
+      implements ChannelOutboundHandler, ChannelInboundHandler {
 
-    private final HeadContextHandler context;
+    private final Internal internal;
 
-    public HeadContext(DefaultChannelPipeline pipeline) {
-      super(HEAD_NAME, pipeline, null, HeadContextHandler.class);
-      this.context = new HeadContextHandler();
+    private HeadContextHandler(Internal internal) {
+      this.internal = internal;
     }
 
-    @Override
-    public ChannelHandler handler() {
-      return this.context;
-    }
-
-    /**
-     * FIXME: This will be implemented in the {@link AbstractChannelHandlerContext}
-     */
-    @Override
-    public ChannelPromise bind(SocketAddress localAddress) {
-      return null;
-    }
-
-    /**
-     * Pipeline will call `bind` from the tail handler. This is the last `bind` function in the pipe
-     * line.
-     */
-    @Override
-    public ChannelPromise bind(SocketAddress localAddress, ChannelPromise promise) {
-      this.channel().internal().bind(localAddress, promise);
-      // FIXME: I'm not sure whether returning the promise from argument is ok or not
-      return promise;
-    }
-
-    /**
-     * FIXME: This will be implemented in the {@link AbstractChannelHandlerContext}
-     */
-    @Override
-    public ChannelPromise connect(SocketAddress remoteAddress, SocketAddress localAddress,
-        ChannelPromise promise) {
-      return null;
-    }
-  }
-
-  private static final class HeadContextHandler implements ChannelHandler {
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
       // TODO:
     }
+
+    @Override
+    public void bind(ChannelHandlerContext ctx, SocketAddress localAddress, ChannelPromise promise)
+        throws Exception {
+      this.internal.bind(localAddress, promise);
+    }
+
+    @Override
+    public void connect(
+        ChannelHandlerContext ctx,
+        SocketAddress remoteAddress,
+        SocketAddress localAddress,
+        ChannelPromise promise)
+        throws Exception {
+      // TODO:
+    }
+
+    @Override
+    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+      // TODO: invoke channel registered callbacks of handlers
+      ctx.fireChannelRegistered();
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {}
   }
 
   private static final class TailContext extends AbstractChannelHandlerContext {
@@ -242,39 +219,29 @@ public class DefaultChannelPipeline implements ChannelPipeline {
       return this.context;
     }
 
-    /**
-     * FIXME: This will be implemented in the {@link AbstractChannelHandlerContext}
-     */
+    /** FIXME: This will be implemented in the {@link AbstractChannelHandlerContext} */
     @Override
-    public ChannelPromise bind(SocketAddress localAddress) {
-      return null;
-    }
-
-    /**
-     * FIXME: This will be implemented in the {@link AbstractChannelHandlerContext}
-     */
-    @Override
-    public ChannelPromise bind(SocketAddress localAddress, ChannelPromise promise) {
-      return null;
-    }
-
-    /**
-     * FIXME: This will be implemented in the {@link AbstractChannelHandlerContext}
-     */
-    @Override
-    public ChannelPromise connect(SocketAddress remoteAddress, SocketAddress localAddress,
-        ChannelPromise promise) {
+    public ChannelPromise connect(
+        SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
       return null;
     }
   }
 
-  /**
-   * The last handler.
-   */
-  private static final class TailContextHandler implements ChannelHandler {
+  /** The last handler. */
+  private static final class TailContextHandler implements ChannelInboundHandler {
     @Override
     public void handlerAdded(ChannelHandlerContext ctx) throws Exception {
       // TODO:
+    }
+
+    @Override
+    public void channelRegistered(ChannelHandlerContext ctx) throws Exception {
+      // NO-OP
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+      // TODO: handle exception
     }
   }
 }
